@@ -1,0 +1,15 @@
+{
+  "new": [],
+  "dropped": [],
+  "retained": [
+    "proxies",
+    "http_proxies",
+    "socks4_proxies",
+    "country_distribution",
+    "socks5_proxies",
+    "timestamp",
+    "total_proxies"
+  ],
+  "latest_snapshot": "2025-05-29T20:13:20",
+  "previous_snapshot": "2025-05-29T14:29:02"
+}

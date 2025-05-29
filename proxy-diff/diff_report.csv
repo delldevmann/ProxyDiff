@@ -1,0 +1,8 @@
+Proxy,Status
+proxies,retained
+http_proxies,retained
+socks4_proxies,retained
+country_distribution,retained
+socks5_proxies,retained
+timestamp,retained
+total_proxies,retained
