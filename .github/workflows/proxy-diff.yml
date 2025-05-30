@@ -1,97 +1,95 @@
-name: Scrape and Compare Proxies
+import requests, re, os, json
+import pandas as pd
+from datetime import datetime
 
-on:
-  schedule:
-    - cron: '0 */6 * * *'  # Every 6 hours
-  workflow_dispatch:
+# Step 1: Get list of all proxy result files
+base_url = "https://raw.githubusercontent.com/delldevmann/proxy-scraper/refs/heads/main/results/"
+index_url = "https://api.github.com/repos/delldevmann/proxy-scraper/contents/results"
+headers = {"Accept": "application/vnd.github.v3+json"}
+result = requests.get(index_url, headers=headers).json()
+proxy_files = [item['name'] for item in result if item['name'].startswith("all_proxies_") and item['name'].endswith(".json")]
 
-permissions:
-  contents: write
+def extract_timestamp(name):
+    match = re.search(r'all_proxies_(\d{8}_\d{6})\.json', name)
+    return datetime.strptime(match.group(1), "%Y%m%d_%H%M%S") if match else datetime.min
 
-jobs:
-  compare-proxies:
-    runs-on: ubuntu-latest
+proxy_files.sort(key=extract_timestamp)
+proxies_by_snapshot = {}
 
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+for fname in proxy_files:
+    url = base_url + fname
+    try:
+        snap = extract_timestamp(fname).isoformat()
+        content = requests.get(url).json()
+        
+        # Extract all actual proxy addresses from all categories
+        all_proxies = set()
+        
+        # Check if 'proxies' key exists and extract from each proxy type
+        if 'proxies' in content:
+            for proxy_type in ['http', 'socks4', 'socks5']:
+                if proxy_type in content['proxies']:
+                    proxy_dict = content['proxies'][proxy_type]
+                    if isinstance(proxy_dict, dict):
+                        # Add all proxy addresses (keys) from this category
+                        all_proxies.update(proxy_dict.keys())
+        
+        proxies_by_snapshot[snap] = all_proxies
+        print(f"Loaded {len(all_proxies)} proxies from {fname}")
+        
+    except Exception as e:
+        print(f"Error loading {fname}: {e}")
 
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.11'
+snapshots = sorted(proxies_by_snapshot.keys())
+if len(snapshots) < 2:
+    print("Not enough snapshots to compare.")
+    exit(0)
 
-      - name: Install dependencies
-        run: |
-          pip install requests pandas
+latest = proxies_by_snapshot[snapshots[-1]]
+previous = proxies_by_snapshot[snapshots[-2]]
 
-      - name: Scrape and Compare Proxy Lists
-        run: |
-          python3 <<'EOF'
-          import requests, re, os, json
-          import pandas as pd
-          from datetime import datetime
+new_proxies = latest - previous
+dropped_proxies = previous - latest
+retained_proxies = latest & previous
 
-          # Step 1: Get list of all proxy result files
-          base_url = "https://raw.githubusercontent.com/delldevmann/proxy-scraper/refs/heads/main/results/"
-          index_url = "https://api.github.com/repos/delldevmann/proxy-scraper/contents/results"
-          headers = {"Accept": "application/vnd.github.v3+json"}
+print(f"\nComparison between {snapshots[-2]} and {snapshots[-1]}:")
+print(f"New proxies: {len(new_proxies)}")
+print(f"Dropped proxies: {len(dropped_proxies)}")
+print(f"Retained proxies: {len(retained_proxies)}")
+print(f"Total unique proxies: {len(latest | previous)}")
 
-          result = requests.get(index_url, headers=headers).json()
-          proxy_files = [item['name'] for item in result if item['name'].startswith("all_proxies_") and item['name'].endswith(".json")]
+os.makedirs("proxy-diff", exist_ok=True)
 
-          def extract_timestamp(name):
-              match = re.search(r'all_proxies_(\d{8}_\d{6})\.json', name)
-              return datetime.strptime(match.group(1), "%Y%m%d_%H%M%S") if match else datetime.min
+summary = {
+    "new": sorted(list(new_proxies)),
+    "dropped": sorted(list(dropped_proxies)),
+    "retained": sorted(list(retained_proxies)),
+    "latest_snapshot": snapshots[-1],
+    "previous_snapshot": snapshots[-2],
+    "stats": {
+        "new_count": len(new_proxies),
+        "dropped_count": len(dropped_proxies),
+        "retained_count": len(retained_proxies),
+        "total_latest": len(latest),
+        "total_previous": len(previous)
+    }
+}
 
-          proxy_files.sort(key=extract_timestamp)
+with open("proxy-diff/diff_summary.json", "w") as f:
+    json.dump(summary, f, indent=2)
 
-          proxies_by_snapshot = {}
-          for fname in proxy_files:
-              url = base_url + fname
-              try:
-                  snap = extract_timestamp(fname).isoformat()
-                  content = requests.get(url).json()
-                  proxies_by_snapshot[snap] = set(content.keys())
-              except Exception as e:
-                  print(f"Error loading {fname}: {e}")
+# Create CSV with all proxies and their status
+all_unique_proxies = latest | previous
+df = pd.DataFrame({
+    "Proxy": sorted(list(all_unique_proxies)),
+    "Status": [
+        "new" if p in new_proxies 
+        else "dropped" if p in dropped_proxies 
+        else "retained" 
+        for p in sorted(all_unique_proxies)
+    ]
+})
 
-          snapshots = sorted(proxies_by_snapshot.keys())
-          if len(snapshots) < 2:
-              print("Not enough snapshots to compare.")
-              exit(0)
-
-          latest = proxies_by_snapshot[snapshots[-1]]
-          previous = proxies_by_snapshot[snapshots[-2]]
-
-          new_proxies = latest - previous
-          dropped_proxies = previous - latest
-          retained_proxies = latest & previous
-
-          os.makedirs("proxy-diff", exist_ok=True)
-          summary = {
-              "new": list(new_proxies),
-              "dropped": list(dropped_proxies),
-              "retained": list(retained_proxies),
-              "latest_snapshot": snapshots[-1],
-              "previous_snapshot": snapshots[-2]
-          }
-
-          with open("proxy-diff/diff_summary.json", "w") as f:
-              json.dump(summary, f, indent=2)
-
-          df = pd.DataFrame({
-              "Proxy": list(latest | previous),
-              "Status": ["new" if p in new_proxies else "dropped" if p in dropped_proxies else "retained" for p in (latest | previous)]
-          })
-          df.to_csv("proxy-diff/diff_report.csv", index=False)
-          print(df.value_counts("Status"))
-          EOF
-
-      - name: Commit diff summary
-        run: |
-          git config --global user.name "github-actions"
-          git config --global user.email "github-actions@users.noreply.github.com"
-          git add proxy-diff/*
-          git commit -m "Update proxy diff report" || echo "No changes to commit"
-          git push
+df.to_csv("proxy-diff/diff_report.csv", index=False)
+print("\nStatus counts:")
+print(df.value_counts("Status"))
